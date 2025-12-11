@@ -35,12 +35,8 @@ def load_data():
 # ===========================
 # HELPER: PREDICT USING .PKL
 # ===========================
-def get_prediction(water, rain):
-    """
-    Model input format:
-    X = [water_level, rain_level]
-    """
-    X = [[water, rain]]
+def get_prediction(water, rain, danger, hum):
+    X = [[float(water), float(rain), float(danger), float(hum)]]
     pred = model.predict(X)[0]
     return pred
 
@@ -104,6 +100,8 @@ while True:
         water = latest["water_level_cm"]
         danger = latest["danger_level"]
         rain = latest["rain_level"]
+        hum = latest["humidity_pct"]
+
 
 
         # ===========================
