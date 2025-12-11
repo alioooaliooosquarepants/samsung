@@ -101,7 +101,16 @@ st.set_page_config(page_title="River Monitor + MQTT + ML", layout="wide")
 st.title("🌊 River Monitoring Dashboard — Real-Time + Prediction")
 
 # AUTO REFRESH EVERY 2 SECONDS
-st.autorefresh(interval=2000, key="refresh")
+try:
+    st.autorefresh(interval=2000, key="refresh")
+except:
+    st.markdown("""
+        <script>
+            setTimeout(function(){
+                window.location.reload();
+            }, 2000);
+        </script>
+    """, unsafe_allow_html=True)
 
 
 # ===========================
