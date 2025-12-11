@@ -46,22 +46,37 @@ mqtt_lock = threading.Lock()
 # ===========================
 def on_message(client, userdata, msg):
     global latest_mqtt
+
     try:
         payload = msg.payload.decode()
 
-        # expect JSON
+        # First try JSON
         try:
-            data = json.loads(payload)
+            raw = json.loads(payload)
+
+            # Extract only what you need, ignore the rest.
+            data = {
+                "timestamp": raw.get("timestamp", None),
+                "water_level_cm": float(raw.get("water_level_cm", 0)),
+                "rain_level": int(raw.get("rain_level", 0)),
+                "danger_level": int(raw.get("danger_level", 0)),
+                "humidity_pct": float(raw.get("humidity_pct", 0)),
+                "temperature_c": float(raw.get("temperature_c", 0)),
+            }
+
         except:
-            # fallback CSV-like "water,rain,danger,hum"
+            # Fallback to CSV: water,rain,danger,hum
             parts = payload.split(",")
             data = {
+                "timestamp": None,
                 "water_level_cm": float(parts[0]),
                 "rain_level": int(parts[1]),
                 "danger_level": int(parts[2]),
-                "humidity_pct": float(parts[3])
+                "humidity_pct": float(parts[3]),
+                "temperature_c": None
             }
 
+        # Save safely
         with mqtt_lock:
             latest_mqtt = data
 
