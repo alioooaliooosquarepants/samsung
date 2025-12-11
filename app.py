@@ -101,9 +101,10 @@ while True:
 
         # ambil data terbaru
         latest = df.iloc[-1]
-        water = latest["water_level"]
-        rain = latest["rain_level"]
+        water = latest["water_level_cm"]
         danger = latest["danger_level"]
+        rain = latest["rain_level"]
+
 
         # ===========================
         # --- COLUMN STATUS ---
