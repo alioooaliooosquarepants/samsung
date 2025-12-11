@@ -199,4 +199,4 @@ while True:
         st.write("Prediction unavailable (model error)")
 
     time.sleep(3)
-    st.experimental_rerun()
+    st.rerun()
