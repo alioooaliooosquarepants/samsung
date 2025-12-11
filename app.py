@@ -125,7 +125,7 @@ while True:
         # --- GRAPHIC WATER LEVEL ---
         # ===========================
         st.subheader("📈 Water Level Chart")
-        st.line_chart(df["water_level"])
+        st.line_chart(df["water_level_cm"])
 
         # ===========================
         # --- MODEL PREDICTION ---
