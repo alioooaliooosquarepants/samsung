@@ -2,181 +2,186 @@ import streamlit as st
 import pandas as pd
 import pickle
 import time
+import threading
+from paho.mqtt import client as mqtt
 
 # ===========================
-# LOAD MACHINE LEARNING MODEL
+# CONFIG
 # ===========================
 MODEL_PATH = "knn_classifier.pkl"
+CSV_PATH = "river_data_log.csv"
+MQTT_BROKER = "broker.hivemq.com"
+MQTT_PORT = 1883
+MQTT_TOPIC = "river/monitoring/data"
 
+# ===========================
+# LOAD MODEL
+# ===========================
 with open(MODEL_PATH, "rb") as f:
     model = pickle.load(f)
 
 # ===========================
-# DASHBOARD CONFIG
+# INIT CSV IF NOT EXISTS
 # ===========================
-st.set_page_config(
-    page_title="River Monitoring Dashboard",
-    page_icon="🌊",
-    layout="wide"
-)
-
-st.title("🌊 **River Monitoring Dashboard**")
-
-DATA_PATH = "river_data_log.csv"
-
+if not st.runtime.exists(CSV_PATH):
+    df0 = pd.DataFrame(columns=["water_level_cm","rain_level","danger_level","humidity_pct","datetime"])
+    df0.to_csv(CSV_PATH, index=False)
 
 # ===========================
-# HELPER: LOAD CSV
+# GLOBAL VARIABLE FOR MQTT DATA
 # ===========================
-def load_data():
-    return pd.read_csv(DATA_PATH)
-
+latest_mqtt = None
+mqtt_lock = threading.Lock()
 
 # ===========================
-# HELPER: NORMALIZE PREDICTION
+# MQTT CALLBACK
 # ===========================
-def normalize_prediction(pred):
-    """
-    Memastikan output model tetap aman:
-    - Jika angka → map ke kelas
-    - Jika string → bikin uppercase
-    """
-
-    mapping = ["SAFE", "WARNING", "DANGER", "CRITICAL"]  # tambahkan jika model punya 4 kelas
-
-    # Jika pred = angka
+def on_message(client, userdata, msg):
+    global latest_mqtt
+    payload = msg.payload.decode()
     try:
-        pred_int = int(pred)
-        if pred_int < len(mapping):
-            return mapping[pred_int]
+        # expecting JSON with keys matching your sensor + levels
+        data = None
+        try:
+            data = json.loads(payload)
+        except:
+            # fallback: assume CSV-like "water, rain, danger, hum"
+            parts = payload.split(",")
+            data = {
+                "water_level_cm": float(parts[0]),
+                "rain_level": int(parts[1]),
+                "danger_level": int(parts[2]),
+                "humidity_pct": float(parts[3])
+            }
+        with mqtt_lock:
+            latest_mqtt = data
+    except Exception as e:
+        print("Invalid MQTT payload:", payload, "error:", e)
+
+def mqtt_thread():
+    client = mqtt.Client()
+    client.on_message = on_message
+    client.connect(MQTT_BROKER, MQTT_PORT)
+    client.subscribe(MQTT_TOPIC)
+    client.loop_forever()
+
+mqtt_bg = threading.Thread(target=mqtt_thread, daemon=True)
+mqtt_bg.start()
+
+# ===========================
+# Streamlit UI
+# ===========================
+st.set_page_config(page_title="River Monitor + MQTT + ML", layout="wide")
+st.title("🌊 River Monitoring Dashboard — Real-Time + Prediction")
+
+def load_data():
+    return pd.read_csv(CSV_PATH)
+
+def append_data(data):
+    df = load_data()
+    data["datetime"] = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
+    df = df.append(data, ignore_index=True)
+    df.to_csv(CSV_PATH, index=False)
+
+def normalize_pred(pred):
+    try:
+        pi = int(pred)
+        mapping = ["SAFE","WARNING","DANGER","CRITICAL"]
+        if pi < len(mapping):
+            return mapping[pi]
     except:
-        pass
+        return str(pred).upper()
+    return str(pred)
 
-    # Jika pred = string
-    return str(pred).upper()
-
-
-def normalize_emoji(text):
-    text = text.upper()
-    if text == "SAFE":
+def normalize_emoji(label):
+    label = label.upper()
+    if label == "SAFE":
         return "🟢"
-    elif text == "WARNING":
+    elif label == "WARNING":
         return "🟡"
-    elif text == "DANGER":
+    elif label == "DANGER":
         return "🔴"
-    elif text == "CRITICAL":
+    elif label == "CRITICAL":
         return "⚠️"
-    return "❓"
+    else:
+        return "❓"
 
-
-# ===========================
-# HELPER: PREDICT USING .PKL
-# ===========================
-def get_prediction(water, rain, danger, hum):
-    X = [[float(water), float(rain), float(danger), float(hum)]]
-    pred = model.predict(X)[0]
-    return normalize_prediction(pred)
-
-
-# ===========================
-# HELPER: BIG STATUS BOX
-# ===========================
 def status_box(title, level, mode="danger"):
     if mode == "danger":
         if level == 0:
-            color = "#1b9e77"
-            emoji = "🟢"
-            text = "SAFE"
+            color = "#1b9e77"; emoji = "🟢"; text = "SAFE"
         elif level == 1:
-            color = "#e6ab02"
-            emoji = "🟡"
-            text = "WARNING"
+            color = "#e6ab02"; emoji = "🟡"; text = "WARNING"
         else:
-            color = "#d95f02"
-            emoji = "🔴"
-            text = "DANGEROUS"
-
+            color = "#d95f02"; emoji = "🔴"; text = "DANGEROUS"
     elif mode == "rain":
         if level == 0:
-            color = "#1b9e77"
-            emoji = "🌤️"
-            text = "NO RAIN"
+            color = "#1b9e77"; emoji = "🌤️"; text = "NO RAIN"
         elif level == 1:
-            color = "#e6ab02"
-            emoji = "🌦️"
-            text = "LIGHT RAIN"
+            color = "#e6ab02"; emoji = "🌦️"; text = "LIGHT RAIN"
         else:
-            color = "#2b46d9"
-            emoji = "🌧️"
-            text = "HEAVY RAIN"
-
-    st.markdown(
-        f"""
-        <div style="padding:20px; border-radius:15px; 
-             background:{color}; text-align:center;">
-            <h2 style="color:white;">{title}</h2>
-            <h1 style="color:white; font-size:60px;">{emoji}</h1>
-            <h1 style="color:white;">{text}</h1>
+            color = "#2b46d9"; emoji = "🌧️"; text = "HEAVY RAIN"
+    st.markdown(f"""
+        <div style="padding:20px; border-radius:15px; background:{color}; text-align:center;">
+          <h2 style="color:white;">{title}</h2>
+          <h1 style="color:white; font-size:50px;">{emoji}</h1>
+          <h3 style="color:white;">{text}</h3>
         </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-
-# ===========================
-# MAIN LOOP (AUTO REFRESH)
-# ===========================
-placeholder = st.empty()
+    """, unsafe_allow_html=True)
 
 while True:
-    with placeholder.container():
-        df = load_data()
+    # jika ada data baru dari MQTT → simpan ke CSV
+    with mqtt_lock:
+        md = latest_mqtt
+        latest_mqtt = None
+    if md is not None:
+        append_data(md)
 
-        # Get latest row
-        latest = df.iloc[-1]
-        water = latest["water_level_cm"]
-        danger = latest["danger_level"]
-        rain = latest["rain_level"]
-        hum = latest["humidity_pct"]
+    df = load_data()
+    if df.empty:
+        st.info("Waiting for data...")
+        time.sleep(2)
+        st.experimental_rerun()
 
-        # ===========================
-        # STATUS COLUMNS
-        # ===========================
-        col1, col2, col3 = st.columns(3)
+    last = df.iloc[-1]
+    water = last.get("water_level_cm", 0)
+    rain = last.get("rain_level", 0)
+    danger = last.get("danger_level", 0)
+    hum = last.get("humidity_pct", 0)
 
-        with col1:
-            st.subheader("Latest Water Level")
-            st.metric("Water Level (cm)", water)
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Water level (cm)", water)
+    with col2:
+        status_box("Danger Level", int(danger), mode="danger")
+    with col3:
+        status_box("Rain Level", int(rain), mode="rain")
 
-        with col2:
-            status_box("Danger Level", danger, mode="danger")
+    st.subheader("📈 Water Level Over Time")
+    st.line_chart(df["water_level_cm"])
 
-        with col3:
-            status_box("Rain Level", rain, mode="rain")
+    # ML Prediction
+    try:
+        # adjust to the number of features model expects
+        pred = model.predict([[float(water), float(rain), float(danger), float(hum)]])[0]
+    except:
+        pred = None
 
-        # ===========================
-        # GRAPHIC WATER LEVEL
-        # ===========================
-        st.subheader("📈 Water Level Chart")
-        st.line_chart(df["water_level_cm"])
+    st.subheader("🤖 Predicted Condition (KNN)")
 
-        # ===========================
-        # MODEL PREDICTION
-        # ===========================
-        st.subheader("🤖 AI Prediction (KNN Model)")
-
-        pred_text = get_prediction(water, rain, danger, hum)
-        pred_emoji = normalize_emoji(pred_text)
-
-        st.markdown(
-            f"""
-            <div style="padding:20px; border-radius:15px; background:#4b4b4b; text-align:center;">
-                <h2 style="color:white;">Predicted Condition</h2>
-                <h1 style="color:white; font-size:60px;">{pred_emoji}</h1>
-                <h1 style="color:white;">{pred_text}</h1>
+    if pred is not None:
+        lab = normalize_pred(pred)
+        emo = normalize_emoji(lab)
+        st.markdown(f"""
+            <div style="padding:25px; border-radius:15px; 
+                        background:#333; color:white; text-align:center;">
+                <h2>Prediction:</h2>
+                <h1 style="font-size:60px;">{emo}</h1>
+                <h1>{lab}</h1>
             </div>
-            """,
-            unsafe_allow_html=True
-        )
+        """, unsafe_allow_html=True)
+    else:
+        st.write("Prediction unavailable — invalid data")
 
     time.sleep(3)
+    st.experimental_rerun()
