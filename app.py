@@ -3,6 +3,8 @@ import pandas as pd
 import pickle
 import time
 import threading
+import json
+import os
 from paho.mqtt import client as mqtt
 
 # ===========================
@@ -23,8 +25,14 @@ with open(MODEL_PATH, "rb") as f:
 # ===========================
 # INIT CSV IF NOT EXISTS
 # ===========================
-if not st.runtime.exists(CSV_PATH):
-    df0 = pd.DataFrame(columns=["water_level_cm","rain_level","danger_level","humidity_pct","datetime"])
+if not os.path.exists(CSV_PATH):
+    df0 = pd.DataFrame(columns=[
+        "water_level_cm",
+        "rain_level",
+        "danger_level",
+        "humidity_pct",
+        "datetime"
+    ])
     df0.to_csv(CSV_PATH, index=False)
 
 # ===========================
@@ -38,14 +46,14 @@ mqtt_lock = threading.Lock()
 # ===========================
 def on_message(client, userdata, msg):
     global latest_mqtt
-    payload = msg.payload.decode()
     try:
-        # expecting JSON with keys matching your sensor + levels
-        data = None
+        payload = msg.payload.decode()
+
+        # expect JSON
         try:
             data = json.loads(payload)
         except:
-            # fallback: assume CSV-like "water, rain, danger, hum"
+            # fallback CSV-like "water,rain,danger,hum"
             parts = payload.split(",")
             data = {
                 "water_level_cm": float(parts[0]),
@@ -53,10 +61,13 @@ def on_message(client, userdata, msg):
                 "danger_level": int(parts[2]),
                 "humidity_pct": float(parts[3])
             }
+
         with mqtt_lock:
             latest_mqtt = data
+
     except Exception as e:
-        print("Invalid MQTT payload:", payload, "error:", e)
+        print("MQTT error:", e)
+
 
 def mqtt_thread():
     client = mqtt.Client()
@@ -65,22 +76,26 @@ def mqtt_thread():
     client.subscribe(MQTT_TOPIC)
     client.loop_forever()
 
+
 mqtt_bg = threading.Thread(target=mqtt_thread, daemon=True)
 mqtt_bg.start()
 
 # ===========================
-# Streamlit UI
+# STREAMLIT SETTINGS
 # ===========================
 st.set_page_config(page_title="River Monitor + MQTT + ML", layout="wide")
 st.title("🌊 River Monitoring Dashboard — Real-Time + Prediction")
 
+# ===========================
+# HELPERS
+# ===========================
 def load_data():
     return pd.read_csv(CSV_PATH)
 
 def append_data(data):
     df = load_data()
     data["datetime"] = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
-    df = df.append(data, ignore_index=True)
+    df = pd.concat([df, pd.DataFrame([data])], ignore_index=True)
     df.to_csv(CSV_PATH, index=False)
 
 def normalize_pred(pred):
@@ -94,64 +109,65 @@ def normalize_pred(pred):
     return str(pred)
 
 def normalize_emoji(label):
-    label = label.upper()
-    if label == "SAFE":
-        return "🟢"
-    elif label == "WARNING":
-        return "🟡"
-    elif label == "DANGER":
-        return "🔴"
-    elif label == "CRITICAL":
-        return "⚠️"
-    else:
-        return "❓"
+    l = label.upper()
+    return {
+        "SAFE": "🟢",
+        "WARNING": "🟡",
+        "DANGER": "🔴",
+        "CRITICAL": "⚠️"
+    }.get(l, "❓")
 
 def status_box(title, level, mode="danger"):
     if mode == "danger":
-        if level == 0:
-            color = "#1b9e77"; emoji = "🟢"; text = "SAFE"
-        elif level == 1:
-            color = "#e6ab02"; emoji = "🟡"; text = "WARNING"
-        else:
-            color = "#d95f02"; emoji = "🔴"; text = "DANGEROUS"
+        if level == 0: color="#1b9e77"; emoji="🟢"; text="SAFE"
+        elif level == 1: color="#e6ab02"; emoji="🟡"; text="WARNING"
+        else: color="#d95f02"; emoji="🔴"; text="DANGEROUS"
+
     elif mode == "rain":
-        if level == 0:
-            color = "#1b9e77"; emoji = "🌤️"; text = "NO RAIN"
-        elif level == 1:
-            color = "#e6ab02"; emoji = "🌦️"; text = "LIGHT RAIN"
-        else:
-            color = "#2b46d9"; emoji = "🌧️"; text = "HEAVY RAIN"
+        if level == 0: color="#1b9e77"; emoji="🌤️"; text="NO RAIN"
+        elif level == 1: color="#e6ab02"; emoji="🌦️"; text="LIGHT RAIN"
+        else: color="#2b46d9"; emoji="🌧️"; text="HEAVY RAIN"
+
     st.markdown(f"""
         <div style="padding:20px; border-radius:15px; background:{color}; text-align:center;">
-          <h2 style="color:white;">{title}</h2>
-          <h1 style="color:white; font-size:50px;">{emoji}</h1>
-          <h3 style="color:white;">{text}</h3>
+            <h2 style="color:white;">{title}</h2>
+            <h1 style="color:white; font-size:50px;">{emoji}</h1>
+            <h3 style="color:white;">{text}</h3>
         </div>
     """, unsafe_allow_html=True)
 
+
+# ===========================
+# MAIN LOOP
+# ===========================
 while True:
-    # jika ada data baru dari MQTT → simpan ke CSV
+
+    # MQTT incoming → append to CSV
     with mqtt_lock:
         md = latest_mqtt
         latest_mqtt = None
+
     if md is not None:
         append_data(md)
 
     df = load_data()
+
     if df.empty:
         st.info("Waiting for data...")
         time.sleep(2)
         st.experimental_rerun()
 
     last = df.iloc[-1]
-    water = last.get("water_level_cm", 0)
-    rain = last.get("rain_level", 0)
-    danger = last.get("danger_level", 0)
-    hum = last.get("humidity_pct", 0)
+
+    water = last["water_level_cm"]
+    rain = last["rain_level"]
+    danger = last["danger_level"]
+    hum = last["humidity_pct"]
 
     col1, col2, col3 = st.columns(3)
+
     with col1:
-        st.metric("Water level (cm)", water)
+        st.metric("Water Level (cm)", water)
     with col2:
         status_box("Danger Level", int(danger), mode="danger")
     with col3:
@@ -160,9 +176,8 @@ while True:
     st.subheader("📈 Water Level Over Time")
     st.line_chart(df["water_level_cm"])
 
-    # ML Prediction
+    # ML prediction
     try:
-        # adjust to the number of features model expects
         pred = model.predict([[float(water), float(rain), float(danger), float(hum)]])[0]
     except:
         pred = None
@@ -170,18 +185,18 @@ while True:
     st.subheader("🤖 Predicted Condition (KNN)")
 
     if pred is not None:
-        lab = normalize_pred(pred)
-        emo = normalize_emoji(lab)
+        label = normalize_pred(pred)
+        emoji = normalize_emoji(label)
+
         st.markdown(f"""
-            <div style="padding:25px; border-radius:15px; 
-                        background:#333; color:white; text-align:center;">
+            <div style="padding:25px; border-radius:15px; background:#333; color:white; text-align:center;">
                 <h2>Prediction:</h2>
-                <h1 style="font-size:60px;">{emo}</h1>
-                <h1>{lab}</h1>
+                <h1 style="font-size:60px;">{emoji}</h1>
+                <h1>{label}</h1>
             </div>
         """, unsafe_allow_html=True)
     else:
-        st.write("Prediction unavailable — invalid data")
+        st.write("Prediction unavailable (model error)")
 
     time.sleep(3)
     st.experimental_rerun()
