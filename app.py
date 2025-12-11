@@ -129,7 +129,8 @@ while True:
         # --- MODEL PREDICTION ---
         # ===========================
         st.subheader("🤖 AI Prediction (KNN Model)")
-        prediction = get_prediction(water, rain)
+        prediction = get_prediction(water, rain, danger, hum)
+
 
         pred_text = ["SAFE", "WARNING", "DANGER"][prediction]
         pred_emoji = ["🟢", "🟡", "🔴"][prediction]
